@@ -1,0 +1,2 @@
+unset http_proxy
+./integration-tests
