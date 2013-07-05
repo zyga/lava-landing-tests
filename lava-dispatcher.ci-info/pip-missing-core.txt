@@ -1,0 +1,2 @@
+# Missing dependencies that should be added to setup.py && friends
+configglue

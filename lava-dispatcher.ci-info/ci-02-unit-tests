@@ -1,0 +1,1 @@
+python -m unittest2 --verbose lava_dispatcher.tests.test_suite
