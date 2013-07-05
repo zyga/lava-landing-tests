@@ -91,6 +91,12 @@ for ci_script in $ci_script_list; do
     if ! ( cd "$src_dir" && $ci_script) >"$log_dir/step-$step.log" 2>&1; then
         echo "E: running '$(basename $ci_script)' failed!"
         cat "$log_dir/step-$step.log" | sed -e 's/^/E: (output): /'
+        if [ "$CI_DEBUG" = "debug" ]; then
+            echo "I: starting interactive shell, exit it to finish the CI run"
+            bash
+        else
+            echo "I: to start a shell at this spot set CI_DEBUG=debug"
+        fi
         exit 101
     else
         cat "$log_dir/step-$step.log" | sed -e 's/^/I: (output): /'
