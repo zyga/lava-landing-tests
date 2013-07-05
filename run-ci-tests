@@ -1,0 +1,105 @@
+#!/bin/sh
+#
+# Copyright 2013 Canonical Ltd.
+# Written by:
+#   Zygmunt Krynicki <zygmunt.krynicki@canonical.com>
+#
+#
+# Helper script to test LAVA projects prior to landing 
+# ====================================================
+
+set -e
+
+# Set up a cache for pip packages
+export PIP_DOWNLOAD_CACHE=$HOME/.cache/pip
+
+# Find the directory with source code and CI info 
+if [ "$1" != "" ]; then
+    src_dir="$1"
+else
+    src_dir="$(pwd)"
+fi
+if [ "$2" != "" ]; then
+    ci_info_dir="$2"
+else
+    ci_info_dir="$src_dir/ci-info"
+fi
+
+# Ensure that ci_info_dir is not relative
+if [ $(echo "$ci_info_dir" | cut -c 1) != '/' ]; then
+    ci_info_dir="$(pwd)/$ci_info_dir"
+fi
+
+echo "I: looking at source from $src_dir and CI info from $ci_info_dir"
+
+if [ ! -d "$ci_info_dir" ]; then
+    echo "W: there is no CI information directory $ci_info_dir"
+    exit 1
+fi
+
+# Create a directory for all the temporary stuff
+ci_dir=$(mktemp -d --suffix .lava.ci)
+echo "I: using $ci_dir for temporary data"
+trap "echo \"I: removing temporary data from $ci_dir\" && rm -rf \"$ci_dir\"" 0
+
+# Create additional directories for logs and venv
+venv_dir="$ci_dir/venv"
+log_dir="$ci_dir/log"
+mkdir "$log_dir"
+
+# Construct a list of required Debian packages and install them if any is missing.
+debian_pkg_list="$(find "$ci_info_dir" -name 'deb-*.txt' -exec cat "{}" \;  | grep -v '^#' | sort | uniq)"
+echo "I: checking if the following Debian packages are installed:" $debian_pkg_list
+for debian_pkg in $debian_pkg_list; do
+    if [ "$(dpkg-query -s $debian_pkg 2>/dev/null | grep '^Status:')" != "Status: install ok installed" ]; then
+        echo "I: package $debian_pkg is missing, installing"
+        if [ $(id -u) != 0 ]; then
+            sudo apt-get install --quiet --quiet --yes $debian_pkg
+        else
+            apt-get install --quiet --quiet --yes $debian_pkg
+        fi
+    fi
+done
+
+# Create a virtualenv
+echo "I: setting up virtualenv in $venv_dir" 
+virtualenv --quiet "$venv_dir"
+
+# Activate virtualenv
+echo "I: activating virtualenv"
+. "$venv_dir/bin/activate"
+
+# Construct a list of required python packages and install them.
+requirement_file="$ci_dir/requirement.txt"
+find "$ci_info_dir" -name 'pip-*.txt' -exec cat "{}" \; | grep -v '^#' | sort | uniq > "$requirement_file"
+echo "I: installing following python packages:" $(cat "$requirement_file")
+pip install --quiet --requirement="$requirement_file"
+
+# Set a http_proxy to the local discard port to prevent setuptools from
+# downloading anything.
+echo "I: setting http_proxy to prevent any further (unintended) http traffic"
+export http_proxy=http://127.0.0.1:9
+
+echo "I: processing CI scripts..."
+# Construct a list of CI test scripts and execute them.
+# We want the relative pathnames as we'll be executing them relative to $src_dir
+ci_script_list="$(find "$ci_info_dir" -name 'ci-*' -executable | sort)"
+step=0
+for ci_script in $ci_script_list; do
+    step=$(expr $step + 1)
+    echo "I: running script: $(basename $ci_script)"
+    if ! ( cd "$src_dir" && $ci_script) >"$log_dir/step-$step.log" 2>&1; then
+        echo "E: running '$(basename $ci_script)' failed!"
+        cat "$log_dir/step-$step.log" | sed -e 's/^/E: (output): /'
+        exit 101
+    else
+        cat "$log_dir/step-$step.log" | sed -e 's/^/I: (output): /'
+    fi
+done
+
+# Print a summary of things we had to do
+echo "I: testing done, good to land"
+echo "I: for the record, this was tested with:"
+echo "I: python: " $(python --version 2>&1)
+echo "I: virtualenv: " $(virtualenv --version 2>&1)
+echo "I: installed python packages: " $(pip freeze)
